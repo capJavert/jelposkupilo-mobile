@@ -257,6 +257,10 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
         configuration.websiteDataStore = .default()
 
+        let marketingVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
+        let buildNumber = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "0"
+        configuration.applicationNameForUserAgent = "JelPoskupiloApp/\(marketingVersion) JelPoskupiloBuild/\(buildNumber)"
+
         let userContentController = WKUserContentController()
         userContentController.add(self, name: jpScanBarcodeHandlerName)
         userContentController.add(self, name: jpLocalStorageChangedHandlerName)

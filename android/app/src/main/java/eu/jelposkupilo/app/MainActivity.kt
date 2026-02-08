@@ -325,6 +325,12 @@ class MainActivity : AppCompatActivity() {
         webView.settings.domStorageEnabled = true
         webView.settings.loadsImagesAutomatically = true
 
+        val defaultUA = webView.settings.userAgentString
+        val packageInfo = runCatching { packageManager.getPackageInfo(packageName, 0) }.getOrNull()
+        val versionName = packageInfo?.versionName ?: "0"
+        val versionCode = packageInfo?.longVersionCode ?: 0
+        webView.settings.userAgentString = "$defaultUA JelPoskupiloApp/$versionName JelPoskupiloBuild/$versionCode"
+
         val cookieManager = CookieManager.getInstance()
         cookieManager.setAcceptCookie(true)
         cookieManager.setAcceptThirdPartyCookies(webView, true)
