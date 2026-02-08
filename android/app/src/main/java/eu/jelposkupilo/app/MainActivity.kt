@@ -322,9 +322,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun configureRefresh() {
-        swipeRefreshLayout.setOnChildScrollUpCallback { _, _ ->
-            webView.scrollY > 0
-        }
         swipeRefreshLayout.setOnRefreshListener {
             webView.reload()
         }
