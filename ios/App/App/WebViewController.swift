@@ -1,18 +1,209 @@
+import AVFoundation
 import UIKit
 import WebKit
 
-final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
+private let jpScanBarcodeHandlerName = "jpScanBarcode"
+private let jpNativeScanEventName = "jp-native-scan-result"
+
+fileprivate protocol BarcodeScannerViewControllerDelegate: AnyObject {
+    func barcodeScannerViewController(_ controller: BarcodeScannerViewController, didScan barCode: String, requestId: String)
+    func barcodeScannerViewControllerDidCancel(_ controller: BarcodeScannerViewController, requestId: String)
+    func barcodeScannerViewController(_ controller: BarcodeScannerViewController, didFailWithMessage message: String, requestId: String)
+}
+
+fileprivate final class BarcodeScannerViewController: UIViewController, AVCaptureMetadataOutputObjectsDelegate {
+    private let requestId: String
+    private weak var delegate: BarcodeScannerViewControllerDelegate?
+    private let captureSession = AVCaptureSession()
+    private var previewLayer: AVCaptureVideoPreviewLayer?
+    private var didFinish = false
+    private var pendingDismissCompletion: (() -> Void)?
+    private let closeButton = UIButton(type: .system)
+
+    init(requestId: String, delegate: BarcodeScannerViewControllerDelegate) {
+        self.requestId = requestId
+        self.delegate = delegate
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    required init?(coder: NSCoder) {
+        return nil
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .black
+        setupCloseButton()
+        setupScanner()
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+
+        if let completion = pendingDismissCompletion {
+            pendingDismissCompletion = nil
+            dismiss(animated: true, completion: completion)
+            return
+        }
+
+        if !captureSession.isRunning {
+            captureSession.startRunning()
+        }
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+
+        if captureSession.isRunning {
+            captureSession.stopRunning()
+        }
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        previewLayer?.frame = view.bounds
+    }
+
+    private func setupCloseButton() {
+        closeButton.translatesAutoresizingMaskIntoConstraints = false
+        closeButton.tintColor = .white
+        closeButton.backgroundColor = UIColor(white: 0.0, alpha: 0.5)
+        closeButton.layer.cornerRadius = 22
+        closeButton.setImage(UIImage(systemName: "xmark"), for: .normal)
+        closeButton.addTarget(self, action: #selector(closeTapped), for: .touchUpInside)
+        view.addSubview(closeButton)
+
+        NSLayoutConstraint.activate([
+            closeButton.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -20),
+            closeButton.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
+            closeButton.widthAnchor.constraint(equalToConstant: 44),
+            closeButton.heightAnchor.constraint(equalToConstant: 44)
+        ])
+    }
+
+    private func setupScanner() {
+        guard let captureDevice = AVCaptureDevice.default(for: .video) else {
+            finishWithError("Kamera nije dostupna.")
+            return
+        }
+
+        do {
+            let input = try AVCaptureDeviceInput(device: captureDevice)
+
+            guard captureSession.canAddInput(input) else {
+                finishWithError("Nije moguće pristupiti kameri.")
+                return
+            }
+            captureSession.addInput(input)
+
+            let output = AVCaptureMetadataOutput()
+            guard captureSession.canAddOutput(output) else {
+                finishWithError("Nije moguće čitati barkod.")
+                return
+            }
+            captureSession.addOutput(output)
+            output.setMetadataObjectsDelegate(self, queue: DispatchQueue.main)
+            output.metadataObjectTypes = [.ean13]
+
+            let previewLayer = AVCaptureVideoPreviewLayer(session: captureSession)
+            previewLayer.videoGravity = .resizeAspectFill
+            previewLayer.frame = view.bounds
+            view.layer.insertSublayer(previewLayer, at: 0)
+            self.previewLayer = previewLayer
+        } catch {
+            finishWithError("Nije moguće inicijalizirati kameru.")
+        }
+    }
+
+    @objc
+    private func closeTapped() {
+        if didFinish {
+            finishAndDismiss {}
+            return
+        }
+
+        didFinish = true
+        finishAndDismiss { [weak self] in
+            guard let self else {
+                return
+            }
+
+            self.delegate?.barcodeScannerViewControllerDidCancel(self, requestId: self.requestId)
+        }
+    }
+
+    private func finishWithError(_ message: String) {
+        guard !didFinish else {
+            return
+        }
+
+        didFinish = true
+        finishAndDismiss { [weak self] in
+            guard let self else {
+                return
+            }
+
+            self.delegate?.barcodeScannerViewController(self, didFailWithMessage: message, requestId: self.requestId)
+        }
+    }
+
+    private func finishAndDismiss(_ completion: @escaping () -> Void) {
+        if captureSession.isRunning {
+            captureSession.stopRunning()
+        }
+
+        if presentingViewController == nil || view.window == nil {
+            pendingDismissCompletion = completion
+            return
+        }
+
+        dismiss(animated: true, completion: completion)
+    }
+
+    func metadataOutput(
+        _ output: AVCaptureMetadataOutput,
+        didOutput metadataObjects: [AVMetadataObject],
+        from connection: AVCaptureConnection
+    ) {
+        guard !didFinish else {
+            return
+        }
+
+        guard let object = metadataObjects.first as? AVMetadataMachineReadableCodeObject,
+              object.type == .ean13,
+              let code = object.stringValue,
+              !code.isEmpty else {
+            return
+        }
+
+        didFinish = true
+        finishAndDismiss { [weak self] in
+            guard let self else {
+                return
+            }
+
+            self.delegate?.barcodeScannerViewController(self, didScan: code, requestId: self.requestId)
+        }
+    }
+}
+
+final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler, BarcodeScannerViewControllerDelegate {
     private let allowedHosts = ["jelposkupilo.eu", "www.jelposkupilo.eu"]
     private let webLightBackground = UIColor.white
     private let webDarkBackground = UIColor(red: 19.0 / 255.0, green: 19.0 / 255.0, blue: 24.0 / 255.0, alpha: 1.0)
     private var webView: WKWebView!
     private let activityIndicator = UIActivityIndicatorView(style: .large)
     private let safeAreaBackgroundView = UIView()
+    private var activeScanRequestId: String?
     private lazy var refreshControl: UIRefreshControl = {
         let control = UIRefreshControl()
         control.addTarget(self, action: #selector(reloadPage), for: .valueChanged)
         return control
     }()
+
+    deinit {
+        webView?.configuration.userContentController.removeScriptMessageHandler(forName: jpScanBarcodeHandlerName)
+    }
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -57,6 +248,10 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
         let configuration = WKWebViewConfiguration()
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
         configuration.websiteDataStore = .default()
+
+        let userContentController = WKUserContentController()
+        userContentController.add(self, name: jpScanBarcodeHandlerName)
+        configuration.userContentController = userContentController
 
         webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = self
@@ -104,7 +299,7 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
     }
 
     private func canLoadInWebView(_ url: URL) -> Bool {
-        guard let host = url.host else {
+        guard let host = url.host?.lowercased(), !host.isEmpty else {
             return false
         }
 
@@ -121,6 +316,105 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
 
     private func openExternally(_ url: URL) {
         UIApplication.shared.open(url, options: [:], completionHandler: nil)
+    }
+
+    private func sendNativeScanResult(
+        requestId: String,
+        status: String,
+        barCode: String? = nil,
+        message: String? = nil
+    ) {
+        var payload: [String: Any] = [
+            "requestId": requestId,
+            "status": status
+        ]
+
+        if let barCode {
+            payload["barCode"] = barCode
+        }
+
+        if let message {
+            payload["message"] = message
+        }
+
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let json = String(data: data, encoding: .utf8) else {
+            return
+        }
+
+        let javascript = "window.dispatchEvent(new CustomEvent('\(jpNativeScanEventName)', { detail: \(json) }));"
+        webView.evaluateJavaScript(javascript, completionHandler: nil)
+    }
+
+    private func isTrustedBridgeMessage(_ message: WKScriptMessage) -> Bool {
+        if let requestURL = message.frameInfo.request.url {
+            return canLoadInWebView(requestURL)
+        }
+
+        if let currentURL = webView.url {
+            return canLoadInWebView(currentURL)
+        }
+
+        return false
+    }
+
+    private func startNativeBarcodeScan(requestId: String) {
+        guard AVCaptureDevice.default(for: .video) != nil else {
+            sendNativeScanResult(
+                requestId: requestId,
+                status: "error",
+                message: "Kamera nije dostupna na ovom uređaju."
+            )
+            return
+        }
+
+        activeScanRequestId = requestId
+
+        let status = AVCaptureDevice.authorizationStatus(for: .video)
+
+        switch status {
+        case .authorized:
+            presentScanner(requestId: requestId)
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
+                DispatchQueue.main.async {
+                    guard let self else {
+                        return
+                    }
+
+                    if granted {
+                        self.presentScanner(requestId: requestId)
+                    } else {
+                        self.activeScanRequestId = nil
+                        self.sendNativeScanResult(
+                            requestId: requestId,
+                            status: "error",
+                            message: "Dozvola za kameru odbijena."
+                        )
+                    }
+                }
+            }
+        case .denied, .restricted:
+            activeScanRequestId = nil
+            sendNativeScanResult(
+                requestId: requestId,
+                status: "error",
+                message: "Dozvola za kameru odbijena."
+            )
+        @unknown default:
+            activeScanRequestId = nil
+            sendNativeScanResult(
+                requestId: requestId,
+                status: "error",
+                message: "Dozvola za kameru nije dostupna."
+            )
+        }
+    }
+
+    private func presentScanner(requestId: String) {
+        let scanner = BarcodeScannerViewController(requestId: requestId, delegate: self)
+        scanner.modalPresentationStyle = .fullScreen
+        present(scanner, animated: true)
     }
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
@@ -155,7 +449,6 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
         let scheme = url.scheme?.lowercased() ?? ""
 
         if ["http", "https"].contains(scheme) {
-            // Ignore malformed http(s) URLs like "http:" with no host.
             guard let host = url.host, !host.isEmpty else {
                 decisionHandler(.cancel)
                 return
@@ -176,5 +469,68 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
             openExternally(url)
         }
         decisionHandler(.cancel)
+    }
+
+    @available(iOS 15.0, *)
+    func webView(
+        _ webView: WKWebView,
+        requestMediaCapturePermissionFor origin: WKSecurityOrigin,
+        initiatedByFrame frame: WKFrameInfo,
+        type: WKMediaCaptureType,
+        decisionHandler: @escaping (WKPermissionDecision) -> Void
+    ) {
+        guard let originURL = URL(string: "\(origin.protocol)://\(origin.host)") else {
+            decisionHandler(.deny)
+            return
+        }
+
+        decisionHandler(canLoadInWebView(originURL) ? .grant : .deny)
+    }
+
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.name == jpScanBarcodeHandlerName else {
+            return
+        }
+
+        guard let payload = message.body as? [String: Any],
+              let requestId = payload["requestId"] as? String,
+              !requestId.isEmpty else {
+            return
+        }
+
+        guard isTrustedBridgeMessage(message) else {
+            sendNativeScanResult(
+                requestId: requestId,
+                status: "error",
+                message: "Nepouzdani izvor."
+            )
+            return
+        }
+
+        guard activeScanRequestId == nil else {
+            sendNativeScanResult(
+                requestId: requestId,
+                status: "error",
+                message: "Skeniranje je već aktivno."
+            )
+            return
+        }
+
+        startNativeBarcodeScan(requestId: requestId)
+    }
+
+    fileprivate func barcodeScannerViewController(_ controller: BarcodeScannerViewController, didScan barCode: String, requestId: String) {
+        activeScanRequestId = nil
+        sendNativeScanResult(requestId: requestId, status: "success", barCode: barCode)
+    }
+
+    fileprivate func barcodeScannerViewControllerDidCancel(_ controller: BarcodeScannerViewController, requestId: String) {
+        activeScanRequestId = nil
+        sendNativeScanResult(requestId: requestId, status: "cancelled")
+    }
+
+    fileprivate func barcodeScannerViewController(_ controller: BarcodeScannerViewController, didFailWithMessage message: String, requestId: String) {
+        activeScanRequestId = nil
+        sendNativeScanResult(requestId: requestId, status: "error", message: message)
     }
 }
