@@ -22,7 +22,7 @@ android {
         applicationId "eu.jelposkupilo.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
+        versionCode 3
         versionName "1.0"
     }
 
@@ -45,7 +45,8 @@ android {
             if (keystorePropertiesFile.exists() && missingReleaseSigningKeys.isEmpty()) {
                 signingConfig signingConfigs.release
             }
-            minifyEnabled false
+            minifyEnabled true
+            shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
             buildConfigField "String", "BASE_URL", "\"https://jelposkupilo.eu\""
         }
@@ -77,6 +78,30 @@ gradle.taskGraph.whenReady { graph ->
 
     if (!missingReleaseSigningKeys.isEmpty()) {
         throw new GradleException("Missing keys in android/keystore.properties: ${missingReleaseSigningKeys.join(', ')}")
+    }
+}
+
+def sanitizeForFilename = { String value ->
+    return (value ?: "unknown").replaceAll(/[^0-9A-Za-z._-]/, "_")
+}
+
+tasks.configureEach { task ->
+    if (task.name == "minifyReleaseWithR8") {
+        task.doLast {
+            def mappingFile = file("$buildDir/outputs/mapping/release/mapping.txt")
+            if (!mappingFile.exists()) {
+                logger.lifecycle("No mapping.txt found to archive.")
+                return
+            }
+
+            def versionCode = sanitizeForFilename(android.defaultConfig.versionCode?.toString())
+            def archivedMappingFile = file("$buildDir/outputs/mapping/release/mapping-v${versionCode}.txt")
+
+            archivedMappingFile.parentFile.mkdirs()
+            archivedMappingFile.bytes = mappingFile.bytes
+
+            logger.lifecycle("Archived deobfuscation mapping: ${archivedMappingFile}")
+        }
     }
 }
 
