@@ -36,6 +36,9 @@ private const val JP_ANALYTICS_PREFS = "jp_analytics"
 private const val JP_ANALYTICS_SID_KEY = "jp_analytics_sid"
 private const val JP_ANALYTICS_HSID_KEY = "jp_analytics_hsid"
 private const val JP_ANALYTICS_COOKIE_MAX_AGE_SECONDS = 315360000L
+private const val JP_LOCAL_STORAGE_PREFS = "jp_local_storage"
+private const val JP_LOCAL_STORAGE_KEY = "jp_local_storage_blob"
+private val JP_LOCAL_STORAGE_ALLOWED_KEYS = arrayOf("jelposkupiloFavoritesId", "jelposkupiloFavoritesNygma")
 
 class MainActivity : AppCompatActivity() {
     private lateinit var webView: WebView
@@ -238,6 +241,49 @@ class MainActivity : AppCompatActivity() {
             .toMap()
     }
 
+    private fun readPersistedLocalStorage(): Map<String, String> {
+        val json = getSharedPreferences(JP_LOCAL_STORAGE_PREFS, MODE_PRIVATE)
+            .getString(JP_LOCAL_STORAGE_KEY, null) ?: return emptyMap()
+
+        return runCatching {
+            val obj = JSONObject(json)
+            val map = mutableMapOf<String, String>()
+            for (key in obj.keys()) {
+                map[key] = obj.getString(key)
+            }
+            map
+        }.getOrDefault(emptyMap())
+    }
+
+    private fun storePersistedLocalStorage(values: Map<String, String>) {
+        val obj = JSONObject()
+        values.forEach { (k, v) -> obj.put(k, v) }
+        getSharedPreferences(JP_LOCAL_STORAGE_PREFS, MODE_PRIVATE)
+            .edit()
+            .putString(JP_LOCAL_STORAGE_KEY, obj.toString())
+            .apply()
+    }
+
+    private fun restoreLocalStorageToWebView(view: WebView) {
+        val persisted = readPersistedLocalStorage()
+        if (persisted.isEmpty()) return
+
+        val lines = JP_LOCAL_STORAGE_ALLOWED_KEYS.mapNotNull { key ->
+            val value = persisted[key] ?: return@mapNotNull null
+            val escapedKey = key.replace("'", "\\'")
+            val escapedValue = value
+                .replace("\\", "\\\\")
+                .replace("'", "\\'")
+                .replace("\n", "\\n")
+                .replace("\r", "\\r")
+            "try { localStorage.setItem('$escapedKey', '$escapedValue'); } catch(e) {}"
+        }
+
+        if (lines.isNotEmpty()) {
+            view.evaluateJavascript(lines.joinToString("\n"), null)
+        }
+    }
+
     private fun configureSystemInsets() {
         ViewCompat.setOnApplyWindowInsetsListener(swipeRefreshLayout) { view, insets ->
             val systemInsets = insets.getInsets(
@@ -307,10 +353,11 @@ class MainActivity : AppCompatActivity() {
             override fun onPageStarted(view: WebView, url: String?, favicon: android.graphics.Bitmap?) {
                 if (swipeRefreshLayout.isRefreshing) {
                     loadingView.visibility = View.GONE
-                    return
+                } else {
+                    loadingView.visibility = View.VISIBLE
                 }
 
-                loadingView.visibility = View.VISIBLE
+                restoreLocalStorageToWebView(view)
             }
 
             override fun onPageFinished(view: WebView, url: String?) {
@@ -449,6 +496,23 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 startNativeBarcodeScan(requestId)
             }
+        }
+
+        @JavascriptInterface
+        fun jpLocalStorageChanged(key: String?, value: String?) {
+            if (key.isNullOrBlank() || key !in JP_LOCAL_STORAGE_ALLOWED_KEYS) {
+                return
+            }
+
+            val stored = readPersistedLocalStorage().toMutableMap()
+
+            if (value != null) {
+                stored[key] = value
+            } else {
+                stored.remove(key)
+            }
+
+            storePersistedLocalStorage(stored)
         }
     }
 }

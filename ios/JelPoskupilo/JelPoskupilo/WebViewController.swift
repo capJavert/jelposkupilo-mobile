@@ -4,10 +4,13 @@ import UIKit
 import WebKit
 
 private let jpScanBarcodeHandlerName = "jpScanBarcode"
+private let jpLocalStorageChangedHandlerName = "jpLocalStorageChanged"
 private let jpNativeScanEventName = "jp-native-scan-result"
 private let jpAnalyticsSidKeychainAccount = "jp.analytics.sid"
 private let jpAnalyticsHsidKeychainAccount = "jp.analytics.hsid"
 private let jpAnalyticsCookieLifetime: TimeInterval = 315360000
+private let jpLocalStorageKeychainAccount = "jp.localstorage"
+private let jpLocalStorageAllowedKeys = ["jelposkupiloFavoritesId", "jelposkupiloFavoritesNygma"]
 
 fileprivate protocol BarcodeScannerViewControllerDelegate: AnyObject {
     func barcodeScannerViewController(_ controller: BarcodeScannerViewController, didScan barCode: String, requestId: String)
@@ -207,6 +210,7 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
 
     deinit {
         webView?.configuration.userContentController.removeScriptMessageHandler(forName: jpScanBarcodeHandlerName)
+        webView?.configuration.userContentController.removeScriptMessageHandler(forName: jpLocalStorageChangedHandlerName)
     }
 
     override func viewDidLoad() {
@@ -255,6 +259,30 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
 
         let userContentController = WKUserContentController()
         userContentController.add(self, name: jpScanBarcodeHandlerName)
+        userContentController.add(self, name: jpLocalStorageChangedHandlerName)
+
+        let persisted = readPersistedLocalStorage()
+        if !persisted.isEmpty {
+            var lines: [String] = []
+            for key in jpLocalStorageAllowedKeys {
+                guard let value = persisted[key] else { continue }
+                let escapedKey = key.replacingOccurrences(of: "'", with: "\\'")
+                let escapedValue = value.replacingOccurrences(of: "\\", with: "\\\\")
+                    .replacingOccurrences(of: "'", with: "\\'")
+                    .replacingOccurrences(of: "\n", with: "\\n")
+                    .replacingOccurrences(of: "\r", with: "\\r")
+                lines.append("try { localStorage.setItem('\(escapedKey)', '\(escapedValue)'); } catch(e) {}")
+            }
+            if !lines.isEmpty {
+                let script = WKUserScript(
+                    source: lines.joined(separator: "\n"),
+                    injectionTime: .atDocumentStart,
+                    forMainFrameOnly: true
+                )
+                userContentController.addUserScript(script)
+            }
+        }
+
         configuration.userContentController = userContentController
 
         webView = WKWebView(frame: .zero, configuration: configuration)
@@ -446,6 +474,23 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
 
     private var analyticsSidService: String {
         Bundle.main.bundleIdentifier ?? "eu.jelposkupilo.app"
+    }
+
+    private func readPersistedLocalStorage() -> [String: String] {
+        guard let json = readPersistentAnalyticsValue(account: jpLocalStorageKeychainAccount),
+              let data = json.data(using: .utf8),
+              let dict = try? JSONSerialization.jsonObject(with: data) as? [String: String] else {
+            return [:]
+        }
+        return dict
+    }
+
+    private func storePersistedLocalStorage(_ values: [String: String]) {
+        guard let data = try? JSONSerialization.data(withJSONObject: values),
+              let json = String(data: data, encoding: .utf8) else {
+            return
+        }
+        storePersistentAnalyticsValue(json, account: jpLocalStorageKeychainAccount)
     }
 
     private func sendNativeScanResult(
@@ -659,6 +704,11 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        if message.name == jpLocalStorageChangedHandlerName {
+            handleLocalStorageChanged(message)
+            return
+        }
+
         guard message.name == jpScanBarcodeHandlerName else {
             return
         }
@@ -688,6 +738,27 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
         }
 
         startNativeBarcodeScan(requestId: requestId)
+    }
+
+    private func handleLocalStorageChanged(_ message: WKScriptMessage) {
+        guard isTrustedBridgeMessage(message) else { return }
+
+        guard let payload = message.body as? [String: Any],
+              let key = payload["key"] as? String,
+              jpLocalStorageAllowedKeys.contains(key) else {
+            return
+        }
+
+        var stored = readPersistedLocalStorage()
+        let value = payload["value"] as? String
+
+        if let value {
+            stored[key] = value
+        } else {
+            stored.removeValue(forKey: key)
+        }
+
+        storePersistedLocalStorage(stored)
     }
 
     fileprivate func barcodeScannerViewController(_ controller: BarcodeScannerViewController, didScan barCode: String, requestId: String) {
