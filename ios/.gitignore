@@ -1,0 +1,8 @@
+App/build
+App/Pods
+App/output
+DerivedData
+xcuserdata
+
+# Xcode user artifacts
+*.xcuserstate

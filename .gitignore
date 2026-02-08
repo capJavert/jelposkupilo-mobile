@@ -1,0 +1,19 @@
+# macOS
+.DS_Store
+
+# iOS build/user artifacts
+ios/DerivedData/
+ios/App/build/
+ios/App/output/
+ios/App/Pods/
+ios/**/xcuserdata/
+ios/**/*.xcuserstate
+
+# Android build/user artifacts
+android/.gradle/
+android/.kotlin/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+android/*.iml
