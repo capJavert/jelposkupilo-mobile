@@ -32,6 +32,10 @@ import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 import org.json.JSONObject
 
 private const val JP_NATIVE_SCAN_EVENT = "jp-native-scan-result"
+private const val JP_ANALYTICS_PREFS = "jp_analytics"
+private const val JP_ANALYTICS_SID_KEY = "jp_analytics_sid"
+private const val JP_ANALYTICS_HSID_KEY = "jp_analytics_hsid"
+private const val JP_ANALYTICS_COOKIE_MAX_AGE_SECONDS = 315360000L
 
 class MainActivity : AppCompatActivity() {
     private lateinit var webView: WebView
@@ -83,11 +87,155 @@ class MainActivity : AppCompatActivity() {
         configureRefresh()
         configureBackNavigation()
 
-        if (savedInstanceState == null) {
-            webView.loadUrl(BuildConfig.BASE_URL)
-        } else {
-            webView.restoreState(savedInstanceState)
+        prepareAnalyticsCookies {
+            if (savedInstanceState == null) {
+                webView.loadUrl(BuildConfig.BASE_URL)
+            } else {
+                webView.restoreState(savedInstanceState)
+            }
         }
+    }
+
+    private fun prepareAnalyticsCookies(onComplete: () -> Unit) {
+        val baseUri = runCatching { Uri.parse(BuildConfig.BASE_URL) }.getOrNull()
+
+        if (baseUri == null) {
+            onComplete()
+            return
+        }
+
+        val scheme = baseUri.scheme?.lowercase()
+        val host = baseUri.host?.lowercase()
+        if ((scheme != "http" && scheme != "https") || host.isNullOrBlank()) {
+            onComplete()
+            return
+        }
+
+        val storedSid = getStoredAnalyticsSid()
+        if (storedSid.isNullOrBlank()) {
+            onComplete()
+            return
+        }
+        val storedHsid = getStoredAnalyticsHsid() ?: storedSid
+
+        val cookieOptions = StringBuilder()
+            .append("Path=/; Max-Age=")
+            .append(JP_ANALYTICS_COOKIE_MAX_AGE_SECONDS)
+            .append("; SameSite=Lax")
+            .apply {
+                if (scheme == "https") {
+                    append("; Secure")
+                }
+            }
+            .toString()
+
+        val cookieValues = listOf(
+            "sid=$storedSid; $cookieOptions",
+            "hsid=$storedHsid; $cookieOptions"
+        )
+
+        val targetUrls = linkedSetOf<String>().apply {
+            add(BuildConfig.BASE_URL)
+            add("$scheme://$host")
+            allowedHosts.forEach { allowedHost ->
+                add("$scheme://$allowedHost")
+            }
+        }.toList()
+
+        val cookiePairs = targetUrls.flatMap { targetUrl ->
+            cookieValues.map { cookieValue -> targetUrl to cookieValue }
+        }
+
+        setCookiesSequentially(
+            cookieManager = CookieManager.getInstance(),
+            cookiePairs = cookiePairs,
+            index = 0,
+            onComplete = onComplete
+        )
+    }
+
+    private fun setCookiesSequentially(
+        cookieManager: CookieManager,
+        cookiePairs: List<Pair<String, String>>,
+        index: Int,
+        onComplete: () -> Unit
+    ) {
+        if (index >= cookiePairs.size) {
+            cookieManager.flush()
+            onComplete()
+            return
+        }
+
+        val (url, cookieValue) = cookiePairs[index]
+        cookieManager.setCookie(url, cookieValue) {
+            setCookiesSequentially(cookieManager, cookiePairs, index + 1, onComplete)
+        }
+    }
+
+    private fun getStoredAnalyticsSid(): String? {
+        val prefs = getSharedPreferences(JP_ANALYTICS_PREFS, MODE_PRIVATE)
+        return prefs.getString(JP_ANALYTICS_SID_KEY, null)
+    }
+
+    private fun getStoredAnalyticsHsid(): String? {
+        val prefs = getSharedPreferences(JP_ANALYTICS_PREFS, MODE_PRIVATE)
+        return prefs.getString(JP_ANALYTICS_HSID_KEY, null)
+    }
+
+    private fun persistAnalyticsCookiesFromUrl(urlString: String?) {
+        val sidStored = getStoredAnalyticsSid()
+        val hsidStored = getStoredAnalyticsHsid()
+
+        if (!sidStored.isNullOrBlank() && !hsidStored.isNullOrBlank()) {
+            return
+        }
+
+        val targetUrl = if (!urlString.isNullOrBlank()) urlString else BuildConfig.BASE_URL
+        val cookieHeader = CookieManager.getInstance().getCookie(targetUrl) ?: return
+        val cookies = parseCookieHeader(cookieHeader)
+
+        val editor = getSharedPreferences(JP_ANALYTICS_PREFS, MODE_PRIVATE).edit()
+        var shouldCommit = false
+
+        if (sidStored.isNullOrBlank()) {
+            val sid = cookies["sid"]
+            if (!sid.isNullOrBlank()) {
+                editor.putString(JP_ANALYTICS_SID_KEY, sid)
+                shouldCommit = true
+            }
+        }
+
+        if (hsidStored.isNullOrBlank()) {
+            val hsid = cookies["hsid"]
+            if (!hsid.isNullOrBlank()) {
+                editor.putString(JP_ANALYTICS_HSID_KEY, hsid)
+                shouldCommit = true
+            }
+        }
+
+        if (shouldCommit) {
+            editor.apply()
+        }
+    }
+
+    private fun parseCookieHeader(cookieHeader: String): Map<String, String> {
+        return cookieHeader
+            .split(';')
+            .mapNotNull { cookiePart ->
+                val index = cookiePart.indexOf('=')
+                if (index <= 0) {
+                    return@mapNotNull null
+                }
+
+                val name = cookiePart.substring(0, index).trim()
+                val value = cookiePart.substring(index + 1).trim()
+                if (name.isEmpty() || value.isEmpty()) {
+                    return@mapNotNull null
+                }
+
+                name to value
+            }
+            .toMap()
     }
 
     private fun configureSystemInsets() {
@@ -157,12 +305,18 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun onPageStarted(view: WebView, url: String?, favicon: android.graphics.Bitmap?) {
+                if (swipeRefreshLayout.isRefreshing) {
+                    loadingView.visibility = View.GONE
+                    return
+                }
+
                 loadingView.visibility = View.VISIBLE
             }
 
             override fun onPageFinished(view: WebView, url: String?) {
                 loadingView.visibility = View.GONE
                 swipeRefreshLayout.isRefreshing = false
+                persistAnalyticsCookiesFromUrl(url)
             }
         }
     }

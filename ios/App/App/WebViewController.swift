@@ -1,9 +1,13 @@
 import AVFoundation
+import Security
 import UIKit
 import WebKit
 
 private let jpScanBarcodeHandlerName = "jpScanBarcode"
 private let jpNativeScanEventName = "jp-native-scan-result"
+private let jpAnalyticsSidKeychainAccount = "jp.analytics.sid"
+private let jpAnalyticsHsidKeychainAccount = "jp.analytics.hsid"
+private let jpAnalyticsCookieLifetime: TimeInterval = 315360000
 
 fileprivate protocol BarcodeScannerViewControllerDelegate: AnyObject {
     func barcodeScannerViewController(_ controller: BarcodeScannerViewController, didScan barCode: String, requestId: String)
@@ -290,11 +294,23 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
             return
         }
 
-        webView.load(URLRequest(url: url))
+        guard let sid = readPersistentAnalyticsSid(), !sid.isEmpty else {
+            webView.load(URLRequest(url: url))
+            return
+        }
+
+        setAnalyticsCookies(sid: sid, hsid: readPersistentAnalyticsHsid() ?? sid, for: url) { [weak self] in
+            guard let self else {
+                return
+            }
+
+            self.webView.load(URLRequest(url: url))
+        }
     }
 
     @objc
     private func reloadPage() {
+        activityIndicator.stopAnimating()
         webView.reload()
     }
 
@@ -316,6 +332,120 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
 
     private func openExternally(_ url: URL) {
         UIApplication.shared.open(url, options: [:], completionHandler: nil)
+    }
+
+    private func setAnalyticsCookies(sid: String, hsid: String, for baseURL: URL, completion: @escaping () -> Void) {
+        guard let scheme = baseURL.scheme?.lowercased(),
+              let baseHost = baseURL.host?.lowercased(),
+              ["http", "https"].contains(scheme) else {
+            completion()
+            return
+        }
+
+        let cookieStore = webView.configuration.websiteDataStore.httpCookieStore
+        let expires = Date(timeIntervalSinceNow: jpAnalyticsCookieLifetime)
+        let hosts = Set(allowedHosts + [baseHost])
+        let cookieValues = ["sid": sid, "hsid": hsid]
+
+        let cookies = hosts.flatMap { host in
+            cookieValues.compactMap { name, value -> HTTPCookie? in
+                var properties: [HTTPCookiePropertyKey: Any] = [
+                    .name: name,
+                    .value: value,
+                    .domain: host,
+                    .path: "/",
+                    .expires: expires
+                ]
+
+                if scheme == "https" {
+                    properties[.secure] = "TRUE"
+                }
+
+                return HTTPCookie(properties: properties)
+            }
+        }
+
+        guard !cookies.isEmpty else {
+            completion()
+            return
+        }
+
+        let group = DispatchGroup()
+
+        cookies.forEach { cookie in
+            HTTPCookieStorage.shared.setCookie(cookie)
+            group.enter()
+            cookieStore.setCookie(cookie) {
+                group.leave()
+            }
+        }
+
+        group.notify(queue: .main) {
+            completion()
+        }
+    }
+
+    private func readPersistentAnalyticsSid() -> String? {
+        return readPersistentAnalyticsValue(account: jpAnalyticsSidKeychainAccount)
+    }
+
+    private func readPersistentAnalyticsHsid() -> String? {
+        return readPersistentAnalyticsValue(account: jpAnalyticsHsidKeychainAccount)
+    }
+
+    private func readPersistentAnalyticsValue(account: String) -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: analyticsSidService,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+
+        guard status == errSecSuccess,
+              let data = item as? Data,
+              let value = String(data: data, encoding: .utf8),
+              !value.isEmpty else {
+            return nil
+        }
+
+        return value
+    }
+
+    private func storePersistentAnalyticsSid(_ sid: String) {
+        storePersistentAnalyticsValue(sid, account: jpAnalyticsSidKeychainAccount)
+    }
+
+    private func storePersistentAnalyticsHsid(_ hsid: String) {
+        storePersistentAnalyticsValue(hsid, account: jpAnalyticsHsidKeychainAccount)
+    }
+
+    private func storePersistentAnalyticsValue(_ value: String, account: String) {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: analyticsSidService,
+            kSecAttrAccount as String: account
+        ]
+        let valueData = Data(value.utf8)
+
+        var addQuery = query
+        addQuery[kSecValueData as String] = valueData
+
+        let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
+
+        if addStatus == errSecDuplicateItem {
+            let attributesToUpdate: [String: Any] = [
+                kSecValueData as String: valueData
+            ]
+            SecItemUpdate(query as CFDictionary, attributesToUpdate as CFDictionary)
+        }
+    }
+
+    private var analyticsSidService: String {
+        Bundle.main.bundleIdentifier ?? "eu.jelposkupilo.app"
     }
 
     private func sendNativeScanResult(
@@ -418,12 +548,53 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
     }
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        if refreshControl.isRefreshing {
+            return
+        }
+
         activityIndicator.startAnimating()
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         activityIndicator.stopAnimating()
         refreshControl.endRefreshing()
+        persistAnalyticsCookiesIfNeeded(from: webView)
+    }
+
+    private func persistAnalyticsCookiesIfNeeded(from webView: WKWebView) {
+        let sidStored = readPersistentAnalyticsSid()
+        let hsidStored = readPersistentAnalyticsHsid()
+
+        if sidStored != nil && hsidStored != nil {
+            return
+        }
+
+        guard let currentHost = webView.url?.host?.lowercased() else {
+            return
+        }
+
+        webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { [weak self] cookies in
+            guard let self else {
+                return
+            }
+
+            if sidStored == nil,
+               let sid = cookies.first(where: { $0.name == "sid" && self.cookieDomainMatches($0.domain, host: currentHost) })?.value,
+               !sid.isEmpty {
+                self.storePersistentAnalyticsSid(sid)
+            }
+
+            if hsidStored == nil,
+               let hsid = cookies.first(where: { $0.name == "hsid" && self.cookieDomainMatches($0.domain, host: currentHost) })?.value,
+               !hsid.isEmpty {
+                self.storePersistentAnalyticsHsid(hsid)
+            }
+        }
+    }
+
+    private func cookieDomainMatches(_ cookieDomain: String, host: String) -> Bool {
+        let normalizedDomain = cookieDomain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        return normalizedDomain == host || allowedHosts.contains(normalizedDomain)
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
