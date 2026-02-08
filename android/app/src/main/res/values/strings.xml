@@ -1,4 +1,5 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
-    <string name="app_name">JelPoskupilo</string>
+    <string name="app_name">Jel poskupilo?</string>
+    <string name="app_name_short">Jel?</string>
 </resources>

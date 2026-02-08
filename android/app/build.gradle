@@ -1,6 +1,19 @@
 apply plugin: 'com.android.application'
 apply plugin: 'org.jetbrains.kotlin.android'
 
+def keystoreProperties = new Properties()
+def keystorePropertiesFile = rootProject.file('keystore.properties')
+if (keystorePropertiesFile.exists()) {
+    keystorePropertiesFile.withInputStream { stream ->
+        keystoreProperties.load(stream)
+    }
+}
+
+def releaseSigningRequiredKeys = ['storeFile', 'storePassword', 'keyAlias', 'keyPassword']
+def missingReleaseSigningKeys = releaseSigningRequiredKeys.findAll { key ->
+    !keystoreProperties.getProperty(key)?.trim()
+}
+
 android {
     namespace = "eu.jelposkupilo.app"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -13,11 +26,25 @@ android {
         versionName "1.0"
     }
 
+    signingConfigs {
+        release {
+            if (keystorePropertiesFile.exists() && missingReleaseSigningKeys.isEmpty()) {
+                storeFile rootProject.file(keystoreProperties.getProperty('storeFile'))
+                storePassword keystoreProperties.getProperty('storePassword')
+                keyAlias keystoreProperties.getProperty('keyAlias')
+                keyPassword keystoreProperties.getProperty('keyPassword')
+            }
+        }
+    }
+
     buildTypes {
         debug {
             buildConfigField "String", "BASE_URL", "\"http://10.0.2.2:3000\""
         }
         release {
+            if (keystorePropertiesFile.exists() && missingReleaseSigningKeys.isEmpty()) {
+                signingConfig signingConfigs.release
+            }
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
             buildConfigField "String", "BASE_URL", "\"https://jelposkupilo.eu\""
@@ -35,6 +62,21 @@ android {
 
     buildFeatures {
         buildConfig true
+    }
+}
+
+gradle.taskGraph.whenReady { graph ->
+    def buildingRelease = graph.allTasks.any { task -> task.name.toLowerCase().contains('release') }
+    if (!buildingRelease) {
+        return
+    }
+
+    if (!keystorePropertiesFile.exists()) {
+        throw new GradleException("Missing android/keystore.properties. Copy android/keystore.properties.example and fill values.")
+    }
+
+    if (!missingReleaseSigningKeys.isEmpty()) {
+        throw new GradleException("Missing keys in android/keystore.properties: ${missingReleaseSigningKeys.join(', ')}")
     }
 }
 

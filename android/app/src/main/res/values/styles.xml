@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <style name="AppTheme" parent="Theme.AppCompat.DayNight.NoActionBar">
-        <item name="android:windowBackground">@color/web_header_surface</item>
+        <item name="android:windowBackground">@drawable/splash</item>
         <item name="android:statusBarColor">@color/web_header_surface</item>
         <item name="android:navigationBarColor">@color/web_header_surface</item>
     </style>

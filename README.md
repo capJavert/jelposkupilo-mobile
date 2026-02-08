@@ -20,6 +20,13 @@ Native wrapper apps for `https://jelposkupilo.eu`:
 - CLI debug build:
   - `cd android`
   - `./gradlew :app:assembleDebug`
+- Release signing setup:
+  - `cp keystore.properties.example keystore.properties`
+  - Fill `keystore.properties` with your upload keystore path and passwords.
+  - `keystore.properties` is ignored by git.
+- CLI release build:
+  - `cd android`
+  - `./gradlew :app:bundleRelease`
 
 ## Notes
 - Both apps are host-allowlisted to `jelposkupilo.eu` (and localhost variants in Debug).
