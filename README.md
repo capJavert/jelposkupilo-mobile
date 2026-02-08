@@ -11,7 +11,7 @@ Native wrapper apps for `https://jelposkupilo.eu`:
 - Android Release: `https://jelposkupilo.eu`
 
 ## iOS
-- Open project: `open ios/App/App.xcodeproj`
+- Open project: `open ios/JelPoskupilo/JelPoskupilo.xcodeproj`
 - Run Debug from Xcode (`App` scheme).
 - Base URL is configured through `ios/debug.xcconfig` and Release build settings.
 
