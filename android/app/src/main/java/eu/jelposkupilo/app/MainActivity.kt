@@ -328,7 +328,7 @@ class MainActivity : AppCompatActivity() {
         val defaultUA = webView.settings.userAgentString
         val packageInfo = runCatching { packageManager.getPackageInfo(packageName, 0) }.getOrNull()
         val versionName = packageInfo?.versionName ?: "0"
-        val versionCode = packageInfo?.longVersionCode ?: 0
+        val versionCode = packageInfo?.let { androidx.core.content.pm.PackageInfoCompat.getLongVersionCode(it) } ?: 0
         webView.settings.userAgentString = "$defaultUA JelPoskupiloApp/$versionName JelPoskupiloBuild/$versionCode"
 
         val cookieManager = CookieManager.getInstance()
