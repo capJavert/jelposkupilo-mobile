@@ -3,9 +3,9 @@
 
 # iOS build/user artifacts
 ios/DerivedData/
-ios/App/build/
-ios/App/output/
-ios/App/Pods/
+ios/JelPoskupilo/build/
+ios/JelPoskupilo/output/
+ios/JelPoskupilo/Pods/
 ios/**/xcuserdata/
 ios/**/*.xcuserstate
 
