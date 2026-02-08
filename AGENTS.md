@@ -49,3 +49,6 @@
   - `android/keystore/`
   - `*.jks`, `*.keystore`
 
+## Brand Colors
+- Primary/brand red: `#C21A0F`
+
