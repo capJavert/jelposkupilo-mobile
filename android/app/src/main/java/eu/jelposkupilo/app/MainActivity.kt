@@ -92,11 +92,31 @@ class MainActivity : AppCompatActivity() {
 
         prepareAnalyticsCookies {
             if (savedInstanceState == null) {
-                webView.loadUrl(BuildConfig.BASE_URL)
+                val deepLinkUrl = resolveDeepLinkUrl(intent)
+                webView.loadUrl(deepLinkUrl ?: BuildConfig.BASE_URL)
             } else {
                 webView.restoreState(savedInstanceState)
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        val url = resolveDeepLinkUrl(intent) ?: return
+        webView.loadUrl(url)
+    }
+
+    private fun resolveDeepLinkUrl(intent: Intent?): String? {
+        val data = intent?.data ?: return null
+        val host = data.host?.lowercase() ?: return null
+        if (host !in allowedHosts) return null
+
+        val baseUri = runCatching { Uri.parse(BuildConfig.BASE_URL) }.getOrNull() ?: return null
+        val builder = baseUri.buildUpon()
+            .path(data.path)
+            .encodedQuery(data.encodedQuery)
+            .encodedFragment(data.encodedFragment)
+        return builder.build().toString()
     }
 
     private fun prepareAnalyticsCookies(onComplete: () -> Unit) {

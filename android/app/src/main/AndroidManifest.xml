@@ -17,10 +17,20 @@
             android:name=".MainActivity"
             android:label="@string/app_name_short"
             android:screenOrientation="sensorPortrait"
+            android:launchMode="singleTop"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:host="jelposkupilo.eu" android:path="/" />
+                <data android:scheme="https" android:host="jelposkupilo.eu" android:pathPrefix="/proizvodi/" />
+                <data android:scheme="https" android:host="jelposkupilo.eu" android:path="/moja-kosarica" />
+                <data android:scheme="https" android:host="jelposkupilo.eu" android:pathPrefix="/kosarica/" />
             </intent-filter>
         </activity>
     </application>

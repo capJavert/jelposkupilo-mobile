@@ -779,4 +779,8 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
         activeScanRequestId = nil
         sendNativeScanResult(requestId: requestId, status: "error", message: message)
     }
+
+    func loadURL(_ url: URL) {
+        webView.load(URLRequest(url: url))
+    }
 }
